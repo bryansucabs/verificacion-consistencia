@@ -1,0 +1,14 @@
+# Ignorar completamente LongMemEval
+LongMemEval/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.cache/
+
+# VS Code
+.vscode/

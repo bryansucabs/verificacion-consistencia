@@ -1,0 +1,35 @@
+{
+  "total_preguntas": 3,
+  "correctas": 0,
+  "accuracy": 0.0,
+  "accuracy_pct": "0.00%",
+  "tiempo_promedio_seg": 292.21,
+  "tiempo_total_min": 14.61,
+  "categoria": "knowledge-update",
+  "detalle": [
+    {
+      "question_id": "6a1eabeb",
+      "question": "What was my personal best time in the charity 5K run?",
+      "answer_correcta": "25 minutes and 50 seconds (or 25:50)",
+      "respuesta_generada": "Your personal best time in the charity 5K run was 27:12.",
+      "score": 0,
+      "tiempo_segundos": 320.84
+    },
+    {
+      "question_id": "6aeb4375",
+      "question": "How many Korean restaurants have I tried in my city?",
+      "answer_correcta": "four",
+      "respuesta_generada": "You have tried three different Korean restaurants in your city.",
+      "score": 0,
+      "tiempo_segundos": 293.15
+    },
+    {
+      "question_id": "830ce83f",
+      "question": "Where did Rachel move to after her recent relocation?",
+      "answer_correcta": "the suburbs",
+      "respuesta_generada": "Rachel moved to Chicago after her recent relocation.",
+      "score": 0,
+      "tiempo_segundos": 262.64
+    }
+  ]
+}
