@@ -1,9 +1,5 @@
 # Verificación de Consistencia en Mem0 mediante NLI
 
-**Autor:** Bryan Edward Suca Jaramillo  
-**Universidad:** Universidad Católica San Pablo (UCSP) — Arequipa, Perú  
-**Año:** 2026  
-**Asesora:** Dra. Graciela Lecireth Meza Lovón
 
 ---
 
@@ -150,25 +146,4 @@ Métricas registradas:
 
 ---
 
-## Dataset LongMemEval
 
-El dataset completo debe descargarse por separado:
-
-```bash
-# Solo el oracle (15MB) — suficiente para evaluación
-python -c "
-from huggingface_hub import hf_hub_download
-hf_hub_download(
-    repo_id='xiaowu0162/longmemeval-cleaned',
-    filename='longmemeval_oracle.json',
-    repo_type='dataset',
-    local_dir='LongMemEval/data'
-)
-"
-```
-
----
-
-## Referencia
-
-Wu, D. et al. (2025). *LongMemEval: Benchmarking Chat Assistants on Long-Term Interactive Memory*. ICLR 2025.
