@@ -385,7 +385,7 @@ class Memory(MemoryBase):
                 self.config.vector_store.provider, telemetry_config
             )
         #---   
-        # Módulo de Verificación de Consistencia (Tesis Bryan Suca)
+        # Modulo de verificacion de consistencia NLI 
         try:
             from mem0.nli import VerificadorConsistencia
             self._verificador_nli = VerificadorConsistencia()
@@ -735,34 +735,38 @@ class Memory(MemoryBase):
             })
             #existing_memories.append({"id": str(idx), "text": mem.payload.get("data", "")})
         #---
-        # === MÓDULO DE VERIFICACIÓN DE CONSISTENCIA (Tesis Bryan Suca) ===
-        # Sección 4.2.2 — Antes de que el LLM tome su decisión de escritura
-        _id_memoria_conflicto = None
+        # modulo de verificacion de consistencia NLI (antes de escritura para que el LLM vea la lista actualizada de hechos conocidos)
         try:
             if self._verificador_nli is not None:
-                _hay_contradiccion, _id_idx_conflicto = self._verificador_nli.verificar(
+                _hay_contradiccion, _ids_conflicto = self._verificador_nli.verificar(
                     hecho_nuevo=parsed_messages,
                     memorias_candidatas=existing_memories,
                 )
-                if _hay_contradiccion and _id_idx_conflicto is not None:
-                    _id_memoria_conflicto = uuid_mapping.get(str(_id_idx_conflicto))
-                    if _id_memoria_conflicto:
-                        logger.info(
-                            f"[NLI] Eliminando memoria en conflicto "
-                            f"id={_id_memoria_conflicto}"
-                        )
-                        self.vector_store.delete(vector_id=_id_memoria_conflicto)
-                        self.db.add_history(
-                            _id_memoria_conflicto,
-                            None,
-                            None,
-                            "DELETE",
-                            created_at=None,
-                            updated_at=None,
-                        )
+                if _hay_contradiccion and _ids_conflicto:
+                    for _id_idx in _ids_conflicto:
+                        _id_vec = uuid_mapping.get(str(_id_idx))
+                        if _id_vec:
+                            logger.info(
+                                f"[NLI] Eliminando memoria en conflicto "
+                                f"id={_id_vec}"
+                            )
+                            self.vector_store.delete(vector_id=_id_vec)
+                            self.db.add_history(
+                                _id_vec,
+                                None,
+                                None,
+                                "DELETE",
+                                created_at=None,
+                                updated_at=None,
+                            )
+                    ids_eliminados = set(str(i) for i in _ids_conflicto)
+                    existing_memories = [
+                        m for m in existing_memories
+                        if m["id"] not in ids_eliminados
+                    ]
         except Exception as e:
             logger.warning(f"[NLI] Módulo falló, usando flujo estándar: {e}")
-        # === FIN MÓDULO NLI ===
+        # fin
         #---
 
 

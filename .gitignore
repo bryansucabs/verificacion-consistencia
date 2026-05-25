@@ -1,5 +1,7 @@
-# Ignorar completamente LongMemEval
+# Ignorar completamente datasets y experimentos externos
 LongMemEval/
+BEAM/
+locomo/
 
 # Python
 __pycache__/

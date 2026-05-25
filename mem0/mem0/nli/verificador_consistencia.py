@@ -1,19 +1,19 @@
 """
-Módulo de Verificación de Consistencia mediante Inferencia de Lenguaje Natural.
+Modulo de Verificacion de Consistencia mediante Inferencia de Lenguaje Natural.
 
-Implementa el componente central de la propuesta de tesis:
-integrar DeBERTa-v3-base como verificador activo de contradicciones
-dentro del ciclo de escritura del sistema Mem0.
+Este modulo es el componente principal de la propuesta de tesis. Su funcion
+es detectar cuando el usuario actualiza un hecho previo y eliminar la memoria
+obsoleta antes de que Qwen decida que guardar.
 
-Autor: Bryan Edward Suca Jaramillo
-Universidad Católica San Pablo — 2026
 """
+
 
 import logging
 from typing import List, Dict, Optional, Tuple
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from mem0.nli.filtro_factual import contiene_hecho_factual
 
 logger = logging.getLogger(__name__)
 
@@ -26,19 +26,22 @@ IDX_NEUTRALIDAD = 2
 
 class VerificadorConsistencia:
     """
-    Verifica la consistencia entre un hecho atómico nuevo fi
-    y las memorias candidatas Ci recuperadas por Qdrant.
+    Verifica si el mensaje nuevo del usuario contradice alguna memoria
+    ya guardada en Qdrant. Si detecta una contradiccion, elimina la
+    memoria obsoleta antes de que Qwen decida que guardar.
 
-    Implementa los tres componentes descritos en la Sección 4.2.2:
-    1. Formación de pares de evaluación
-    2. Inferencia de la relación lógica entre pares
-    3. Determinación de la acción por umbrales de confianza
+    Tiene tres pasos:
+    1. Formar pares: filtra las memorias mas similares al mensaje nuevo
+    2. Inferir relaciones: DeBERTa compara cada par y calcula probabilidades
+    3. Determinar accion: si P(contradiccion) > 0.85, elimina la memoria vieja
     """
+
 
     def __init__(self, umbral: float = UMBRAL_CONTRADICCION):
         self.umbral = umbral
         self._tokenizer = None
         self._modelo = None
+        self.contradicciones = 0
         logger.info(f"VerificadorConsistencia inicializado con umbral={umbral}")
 
     def _cargar_modelo(self):
@@ -48,7 +51,7 @@ class VerificadorConsistencia:
             self._modelo = AutoModelForSequenceClassification.from_pretrained(MODELO_NLI)
             self._modelo.eval()
             logger.info("Modelo NLI cargado correctamente en CPU")
-
+    #premisa = hecho nuevo, hipotesis = memoria candidata
     def _inferir_par(self, premisa: str, hipotesis: str) -> Dict:
         self._cargar_modelo()
         inputs = self._tokenizer(
@@ -67,44 +70,36 @@ class VerificadorConsistencia:
             "p_neutralidad":   float(probabilidades[IDX_NEUTRALIDAD]),
         }
 
-    def formar_pares(
-        self,
-        hecho_nuevo: str,
-        memorias_candidatas: List[Dict]
-    ) -> List[Tuple[str, str, str]]:
+    def formar_pares(self,hecho_nuevo: str,memorias_candidatas: List[Dict]) -> List[Tuple[str, str, str]]:
         """
-        Componente 1: Formación de pares de evaluación.
-        Pi = {(fi, mj) | mj ∈ Ci}
+        Componente 1: Formacion de pares de evaluacion.
 
-        Solo forma pares con memorias que tienen alta similitud
-        semántica con el hecho nuevo (score > 0.5 de Qdrant).
-        Esto evita comparar temas completamente distintos y
-        reduce falsos positivos en la detección de contradicciones.
+        Toma el mensaje nuevo y las memorias encontradas por Qdrant, y forma
+        pares (mensaje_nuevo, memoria) solo con las memorias que tienen
+        score > 0.70. Las memorias con score menor se ignoran porque son de
+        temas muy distintos y podrian causar falsas contradicciones.
         """
+
         pares = []
         for memoria in memorias_candidatas:
             id_memoria = memoria.get("id", "")
             texto = memoria.get("text", "").strip()
             score = memoria.get("score", 0.0)
-
-            # Solo comparar memorias con similitud semántica > 0.5
-            if texto and score > 0.7:
+            if texto and score > 0.70:
                 pares.append((id_memoria, hecho_nuevo, texto))
 
         logger.debug(f"Formados {len(pares)} pares de evaluación relevantes")
         return pares
 
-    def inferir_relaciones(
-        self,
-        pares: List[Tuple[str, str, str]]
-    ) -> List[Dict]:
+    def inferir_relaciones(self,pares: List[Tuple[str, str, str]]) -> List[Dict]:
         """
-        Componente 2: Inferencia de la relación lógica entre pares.
+        Componente 2: Inferencia de relaciones entre pares.
 
-        Para cada par (fi, mj) produce la terna pij:
-        pij = (P(contradicción), P(implicación), P(neutralidad))
-        Solo P(contradicción) actúa como señal activa del módulo.
+        Para cada par formado en el Componente 1, llama a DeBERTa y obtiene
+        tres probabilidades: P(contradiccion), P(implicacion), P(neutralidad).
+        Solo P(contradiccion) se usa para decidir si hay un conflicto.
         """
+
         if not pares:
             return []
 
@@ -130,71 +125,70 @@ class VerificadorConsistencia:
 
         return resultados
 
-    def determinar_accion(
-        self,
-        resultados: List[Dict]
-    ) -> Tuple[bool, Optional[Dict]]:
+    def determinar_accion(self, resultados: List[Dict]) -> Tuple[bool, List[Dict]]:
         """
-        Componente 3: Determinación de la acción por umbrales de confianza.
+        Componente 3: Determinacion de la accion.
 
-        Caso 1 — Contradicción detectada:
-            Algún Pj(contradicción) > 0.85
-            → Retorna (True, resultado_max)
-            → El módulo eliminará la memoria en conflicto de Qdrant
+        Devuelve TODAS las memorias con P(contradiccion) > umbral, no solo la maxima.
+        Esto evita que memorias duplicadas sobre el mismo hecho sobrevivan cuando
+        Qwen las almaceno en multiples entradas durante sesiones anteriores.
 
-        Caso 2 — Sin contradicción suficiente:
-            Ningún Pj(contradicción) > 0.85
-            → Retorna (False, None)
-            → Flujo estándar de Mem0 sin modificaciones
+        Caso 1 : Si alguna P(contradiccion) > 0.85:
+            Hay contradiccion : devuelve (True, [lista de conflictos])
+            El modulo borrara todas las memorias en conflicto de Qdrant.
+
+        Caso 2 : Si ninguna P(contradiccion) > 0.85:
+            No hay contradiccion : devuelve (False, [])
+            Mem0 continua su flujo normal sin cambios.
         """
         if not resultados:
-            return False, None
+            return False, []
 
-        resultado_max = max(resultados, key=lambda r: r["p_contradiccion"])
-        p_max = resultado_max["p_contradiccion"]
+        en_conflicto = [r for r in resultados if r["p_contradiccion"] > self.umbral]
 
-        if p_max > self.umbral:
-            logger.info(
-                f"CONTRADICCIÓN DETECTADA — "
-                f"P(contradicción)={p_max:.3f} > umbral={self.umbral}\n"
-                f"  Memoria en conflicto: '{resultado_max['memoria_texto'][:80]}'\n"
-                f"  Hecho nuevo:          '{resultado_max['hecho_nuevo'][:80]}'"
-            )
-            return True, resultado_max
+        if en_conflicto:
+            self.contradicciones += len(en_conflicto)
+            for r in en_conflicto:
+                logger.info(
+                    f"CONTRADICCIÓN DETECTADA — "
+                    f"P(contradicción)={r['p_contradiccion']:.3f} > umbral={self.umbral}\n"
+                    f"  Memoria en conflicto: '{r['memoria_texto'][:80]}'\n"
+                    f"  Hecho nuevo:          '{r['hecho_nuevo'][:80]}'"
+                )
+            return True, en_conflicto
 
+        p_max = max(r["p_contradiccion"] for r in resultados)
         logger.debug(
             f"Sin contradicción — "
             f"P(contradicción) máx={p_max:.3f} ≤ umbral={self.umbral}"
         )
-        return False, None
+        return False, []
 
-    def verificar(
-        self,
-        hecho_nuevo: str,
-        memorias_candidatas: List[Dict]
-    ) -> Tuple[bool, Optional[str]]:
+    def verificar(self, hecho_nuevo: str, memorias_candidatas: List[Dict]) -> Tuple[bool, List[str]]:
         """
-        Método principal. Ejecuta los tres componentes en secuencia.
+        Metodo principal. Llama a los tres componentes en orden:
+        formar_pares , inferir_relaciones , determinar_accion.
 
-        Args:
-            hecho_nuevo: El hecho atómico fi extraído del mensaje
-            memorias_candidatas: [{"id": str, "text": str, "score": float}]
-
-        Returns:
-            (hay_contradiccion, id_memoria_en_conflicto)
+        Retorna (True, [lista de ids]) si hay contradicciones, (False, []) si no.
         """
+        # Filtro previo: si el mensaje no contiene hechos concretos no hay
+        # posibilidad de contradiccion y se omite DeBERTa para ahorrar tiempo
+        if not contiene_hecho_factual(hecho_nuevo):
+            logger.debug(f"[Filtro] Mensaje omitido por no contener hechos concretos")
+            return False, []
+
         pares = self.formar_pares(hecho_nuevo, memorias_candidatas)
         if not pares:
-            return False, None
+            return False, []
 
         resultados = self.inferir_relaciones(pares)
         if not resultados:
-            return False, None
+            return False, []
 
-        hay_contradiccion, resultado_conflicto = self.determinar_accion(resultados)
+        hay_contradiccion, conflictos = self.determinar_accion(resultados)
 
         if hay_contradiccion:
-            id_idx = resultado_conflicto["id_memoria"]
-            return True, id_idx
+            ids = [r["id_memoria"] for r in conflictos]
+            return True, ids
 
-        return False, None
+        return False, []

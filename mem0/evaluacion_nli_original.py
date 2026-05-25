@@ -13,8 +13,8 @@ from qdrant_client import QdrantClient
 import ollama
 
 # Configuracion del experimento
-DATASET_PATH    = "E:/proyecto/LongMemEval/data/longmemeval_s"
-RESULTADOS_PATH = "E:/proyecto/resultados_longmemeval_s_todas_nli.json"
+DATASET_PATH    = "E:/proyecto/LongMemEval/data/longmemeval_oracle"
+RESULTADOS_PATH = "E:/proyecto/resultados_prueba_nli.json"
 CATEGORIA       = "knowledge-update"
 MAX_PREGUNTAS   = 78
 # True  -> Mem0 + Verificador de Consistencia (propuesta de tesis)
@@ -54,7 +54,7 @@ def limpiar_memorias():
     for col in c.get_collections().collections:
         c.delete_collection(col.name)
 
-# Carga en Mem0 todos los mensajes role=user de todas las sesiones
+# Carga en Mem0 solo los mensajes con has_answer=True de cada sesion
 def cargar_sesiones(m, sesiones, user_id):
     for sesion in sesiones:
         if isinstance(sesion, list):
@@ -67,6 +67,8 @@ def cargar_sesiones(m, sesiones, user_id):
         for msg in mensajes:
             if not isinstance(msg, dict):
                 continue
+            if not msg.get("has_answer", False):
+                continue
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "").strip()
@@ -77,10 +79,8 @@ def cargar_sesiones(m, sesiones, user_id):
             except Exception as e:
                 logging.warning(f"Error al agregar mensaje: {e}")
 
-# Busca memorias en Qdrant y le pregunta a Qwen la respuesta
-# Retorna (respuesta, tiempo_respuesta_seg)
+# Busca memorias relevantes en Qdrant y le pregunta a Qwen la respuesta
 def responder_pregunta(m, pregunta, user_id):
-    t_inicio = time.time()
     memorias = m.search(
         query=pregunta,
         filters={"user_id": user_id},
@@ -89,7 +89,7 @@ def responder_pregunta(m, pregunta, user_id):
     contexto = "\n".join([r["memory"] for r in memorias["results"]])
 
     if not contexto.strip():
-        return "No relevant memories found.", round(time.time() - t_inicio, 2)
+        return "No relevant memories found."
 
     prompt = (
         "Based on these user memories:\n"
@@ -103,7 +103,7 @@ def responder_pregunta(m, pregunta, user_id):
         model="qwen2.5:7b-instruct-q4_K_M",
         messages=[{"role": "user", "content": prompt}]
     )
-    return respuesta["message"]["content"], round(time.time() - t_inicio, 2)
+    return respuesta["message"]["content"]
 
 # Evalua si la respuesta generada contiene el mismo hecho que la respuesta correcta
 def llm_judge(pregunta, respuesta_correcta, respuesta_generada):
@@ -158,11 +158,9 @@ if os.path.exists(RESULTADOS_PATH):
         resultados = []
         ya_procesados = set()
 
-correctas              = sum(r["score"] for r in resultados)
-tiempos                = [r["tiempo_segundos"] for r in resultados]
-tiempos_carga          = [r.get("tiempo_carga_seg", 0) for r in resultados]
-tiempos_respuesta      = [r.get("tiempo_respuesta_seg", 0) for r in resultados]
-tiempo_inicio_total    = time.time()
+correctas           = sum(r["score"] for r in resultados)
+tiempos             = [r["tiempo_segundos"] for r in resultados]
+tiempo_inicio_total = time.time()
 
 for i, item in enumerate(preguntas_ku):
     if item['question_id'] in ya_procesados:
@@ -179,55 +177,33 @@ for i, item in enumerate(preguntas_ku):
         m._verificador_nli = None
 
     user_id = f"eval_{item['question_id']}"
-    n_mensajes = sum(
+    n_has_answer = sum(
         1 for s in item['haystack_sessions']
         for msg in (s if isinstance(s, list) else s.get("messages", []))
-        if isinstance(msg, dict) and msg.get("role") == "user"
+        if isinstance(msg, dict) and msg.get("has_answer", False)
     )
-    print(f"  Mensajes user a cargar: {n_mensajes}")
-
-    # Medir tiempo de carga de sesiones
-    t_carga_inicio = time.time()
+    print(f"  Mensajes has_answer: {n_has_answer} (llamadas a Qwen para cargar)")
     cargar_sesiones(m, item['haystack_sessions'], user_id)
-    tiempo_carga = round(time.time() - t_carga_inicio, 2)
 
-    # Contar memorias guardadas en Qdrant
-    c_qdrant = QdrantClient("localhost", port=6333)
-    memorias_guardadas = sum(
-        c_qdrant.get_collection(col.name).points_count
-        for col in c_qdrant.get_collections().collections
-    )
-
-    # Contar contradicciones detectadas por el modulo NLI durante la carga
-    contradicciones = 0
-    if USE_NLI and m._verificador_nli is not None:
-        contradicciones = m._verificador_nli.contradicciones
-
-    # Responder pregunta y medir latencia real
-    respuesta, tiempo_respuesta = responder_pregunta(m, item['question'], user_id)
+    # Responder pregunta
+    respuesta = responder_pregunta(m, item['question'], user_id)
 
     # Evaluar con LLM-as-Judge
     score = llm_judge(item['question'], item['answer'], respuesta)
     correctas += score
 
-    # Medir tiempo total de la pregunta
+    # Medir tiempo
     tiempo_pregunta = round(time.time() - tiempo_inicio, 2)
     tiempos.append(tiempo_pregunta)
-    tiempos_carga.append(tiempo_carga)
-    tiempos_respuesta.append(tiempo_respuesta)
 
     # Guardar resultado parcial por si se interrumpe
     resultado = {
-        "question_id":          item['question_id'],
-        "question":             item['question'],
-        "answer_correcta":      item['answer'],
-        "respuesta_generada":   respuesta,
-        "score":                score,
-        "tiempo_segundos":      tiempo_pregunta,
-        "tiempo_carga_seg":     tiempo_carga,
-        "tiempo_respuesta_seg": tiempo_respuesta,
-        "memorias_guardadas":   memorias_guardadas,
-        "contradicciones":      contradicciones,
+        "question_id":        item['question_id'],
+        "question":           item['question'],
+        "answer_correcta":    item['answer'],
+        "respuesta_generada": respuesta,
+        "score":              score,
+        "tiempo_segundos":    tiempo_pregunta,
     }
     resultados.append(resultado)
 
@@ -236,35 +212,25 @@ for i, item in enumerate(preguntas_ku):
 
     accuracy        = correctas / (i + 1)
     tiempo_promedio = sum(tiempos) / len(tiempos)
-    print(f"  Correcta:   {item['answer']}")
-    print(f"  Generada:   {respuesta[:100]}")
-    print(f"  Memorias:   {memorias_guardadas} | Contradicciones: {contradicciones}")
+    print(f"  Correcta:  {item['answer']}")
+    print(f"  Generada:  {respuesta[:100]}")
     print(f"  Score: {score} | Accuracy: {accuracy:.2%} | "
-          f"Carga: {tiempo_carga:.1f}s | Respuesta: {tiempo_respuesta:.1f}s | Total: {tiempo_pregunta:.1f}s")
+          f"Tiempo: {tiempo_pregunta:.1f}s | Promedio: {tiempo_promedio:.1f}s")
 
 # Resumen final
-tiempo_total           = time.time() - tiempo_inicio_total
-accuracy_final         = correctas / len(preguntas_ku)
-tiempo_promedio        = sum(tiempos) / len(tiempos)
-tiempo_carga_promedio  = sum(tiempos_carga) / len(tiempos_carga) if tiempos_carga else 0
-tiempo_resp_promedio   = sum(tiempos_respuesta) / len(tiempos_respuesta) if tiempos_respuesta else 0
-total_contradicciones  = sum(r.get("contradicciones", 0) for r in resultados)
-promedio_memorias      = sum(r.get("memorias_guardadas", 0) for r in resultados) / len(resultados)
+tiempo_total    = time.time() - tiempo_inicio_total
+accuracy_final  = correctas / len(preguntas_ku)
+tiempo_promedio = sum(tiempos) / len(tiempos)
 
 resumen = {
-    "total_preguntas":              len(preguntas_ku),
-    "correctas":                    correctas,
-    "accuracy":                     round(accuracy_final, 4),
-    "accuracy_pct":                 f"{accuracy_final:.2%}",
-    "tiempo_promedio_seg":          round(tiempo_promedio, 2),
-    "tiempo_carga_promedio_seg":    round(tiempo_carga_promedio, 2),
-    "tiempo_respuesta_promedio_seg": round(tiempo_resp_promedio, 2),
-    "tiempo_total_min":             round(tiempo_total / 60, 2),
-    "total_contradicciones":        total_contradicciones,
-    "promedio_memorias_guardadas":  round(promedio_memorias, 2),
-    "use_nli":                      USE_NLI,
-    "categoria":                    CATEGORIA,
-    "detalle":                      resultados,
+    "total_preguntas":     len(preguntas_ku),
+    "correctas":           correctas,
+    "accuracy":            round(accuracy_final, 4),
+    "accuracy_pct":        f"{accuracy_final:.2%}",
+    "tiempo_promedio_seg": round(tiempo_promedio, 2),
+    "tiempo_total_min":    round(tiempo_total / 60, 2),
+    "categoria":           CATEGORIA,
+    "detalle":             resultados,
 }
 
 with open(RESULTADOS_PATH, 'w') as f:
@@ -273,14 +239,11 @@ with open(RESULTADOS_PATH, 'w') as f:
 print("\n" + "="*60)
 print("RESUMEN FINAL")
 print("="*60)
-print(f"Preguntas evaluadas    : {len(preguntas_ku)}")
-print(f"Respuestas correctas   : {correctas}")
-print(f"Accuracy               : {accuracy_final:.2%}")
-print(f"Tiempo carga promedio  : {tiempo_carga_promedio:.1f} segundos")
-print(f"Tiempo respuesta prom. : {tiempo_resp_promedio:.1f} segundos")
-print(f"Tiempo total promedio  : {tiempo_promedio:.1f} segundos")
-print(f"Total contradicciones  : {total_contradicciones}")
-print(f"Memorias prom/pregunta : {promedio_memorias:.1f}")
-print(f"Tiempo total           : {tiempo_total/60:.1f} minutos")
-print(f"Resultados guardados   : {RESULTADOS_PATH}")
+print(f"Preguntas evaluadas : {len(preguntas_ku)}")
+print(f"Respuestas correctas: {correctas}")
+print(f"Accuracy            : {accuracy_final:.2%}")
+print(f"Tiempo promedio/preg: {tiempo_promedio:.1f} segundos")
+print(f"Tiempo total        : {tiempo_total/60:.1f} minutos")
+print(f"Resultados guardados: {RESULTADOS_PATH}")
 print("="*60)
+#antihguo
