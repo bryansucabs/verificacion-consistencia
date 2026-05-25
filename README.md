@@ -88,40 +88,7 @@ MENSAJE NUEVO
         └── longmemeval_oracle   ← Dataset (500 preguntas, 78 knowledge-update)
 ```
 
----
 
-## Requisitos
-
-```bash
-# Servicios necesarios
-docker run -p 6333:6333 qdrant/qdrant
-ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama pull nomic-embed-text
-
-# Dependencias Python
-pip install mem0ai transformers torch qdrant-client ollama
-```
-
----
-
-## Prueba rápida del módulo
-
-```bash
-python test_completo.py
-```
-
-Salida esperada:
-```
---- AGREGANDO MEMORIA 1 ---
-{'results': [{'memory': 'User works at Microsoft', 'event': 'ADD'}]}
-
---- AGREGANDO MEMORIA 2 (contradicción) ---
-CONTRADICCIÓN DETECTADA — P(contradicción)=0.991 > umbral=0.85
-[NLI] Eliminando memoria en conflicto
-
---- MEMORIAS FINALES ---
-  → User works at Google    ← solo una memoria, sin contradicción
-```
 
 ---
 
